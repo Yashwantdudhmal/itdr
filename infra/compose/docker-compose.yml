@@ -1,0 +1,76 @@
+networks:
+  bloodhound-net:
+    driver: bridge
+
+volumes:
+  neo4j-data:
+  postgres-data:
+
+services:
+  neo4j:
+    image: neo4j:4.4
+    container_name: bloodhound-neo4j
+    environment:
+      - NEO4J_AUTH=neo4j/bloodhoundcommunityedition
+      - NEO4J_dbms_memory_heap_initial__size=1G
+      - NEO4J_dbms_memory_heap_max__size=1G
+    volumes:
+      - neo4j-data:/data
+    networks:
+      bloodhound-net:
+        aliases:
+          - graph-db
+
+  postgres:
+    image: postgres:14
+    container_name: bloodhound-postgres
+    environment:
+      - POSTGRES_USER=bloodhound
+      - POSTGRES_PASSWORD=bloodhoundcommunityedition
+      - POSTGRES_DB=bloodhound
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      bloodhound-net:
+        aliases:
+          - app-db
+
+  bloodhound:
+    image: specterops/bloodhound:5.0.10
+    container_name: bloodhound-app
+    restart: unless-stopped
+    depends_on:
+      - neo4j
+      - postgres
+    environment:
+      - WEB_PORT=80
+      - BH_API_PORT=8008
+      - BH_HOSTNAME=bloodhound.local
+      - BH_ADMIN_EMAIL=admin@bloodhoundenterprise.io
+      - BH_ADMIN_PASSWORD=BloodHound
+      - BH_NEO4J_HOSTNAME=neo4j
+      - BH_NEO4J_AUTH=neo4j/bloodhoundcommunityedition
+      - BH_NEO4J_PORT=7687
+      - BH_NEO4J_WEB_PORT=7474
+      - BH_POSTGRES_USER=bloodhound
+      - BH_POSTGRES_PASSWORD=bloodhoundcommunityedition
+      - BH_POSTGRES_DATABASE=bloodhound
+      - BH_POSTGRES_HOST=postgres
+      - BH_POSTGRES_PORT=5432
+    expose:
+      - "80"
+      - "8008"
+    networks:
+      - bloodhound-net
+
+  proxy:
+    image: nginx:1.25
+    container_name: bloodhound-proxy
+    depends_on:
+      - bloodhound
+    volumes:
+      - ../docker/bloodhound/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    networks:
+      - bloodhound-net

@@ -1,0 +1,4 @@
+oss:
+  - name: bloodhound
+    repo: https://github.com/SpecterOps/BloodHound
+    version: "v5.0.10"
