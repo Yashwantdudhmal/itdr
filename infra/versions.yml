@@ -2,3 +2,6 @@ oss:
   - name: bloodhound
     repo: https://github.com/SpecterOps/BloodHound
     version: "v5.0.10"
+  - name: midpoint
+    repo: https://github.com/Evolveum/midpoint
+    version: "v4.10"

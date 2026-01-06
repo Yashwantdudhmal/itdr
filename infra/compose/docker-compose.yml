@@ -1,17 +1,77 @@
 networks:
   bloodhound-net:
     driver: bridge
+  midpoint-net:
+    driver: bridge
+    internal: true
 
 volumes:
   neo4j-data:
   postgres-data:
+  midpoint-postgres-data:
+  thehive-cassandra-data:
+  thehive-elasticsearch-data:
+  thehive-data:
 
 services:
+  thehive-cassandra:
+    image: cassandra:4.1
+    container_name: thehive-cassandra
+    environment:
+      - CASSANDRA_CLUSTER_NAME=thehive
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=128M
+    volumes:
+      - thehive-cassandra-data:/var/lib/cassandra
+    networks:
+      - bloodhound-net
+
+  thehive-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.18
+    container_name: thehive-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - thehive-elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - bloodhound-net
+
+  thehive:
+    image: strangebee/thehive:5
+    container_name: thehive
+    restart: unless-stopped
+    depends_on:
+      - thehive-cassandra
+      - thehive-elasticsearch
+    command:
+      - --secret
+      - ${THEHIVE_SECRET:-change-me-in-prod}
+      - --cql-hostnames
+      - thehive-cassandra
+      - --cql-cluster
+      - thehive
+      - --es-hostnames
+      - thehive-elasticsearch
+      - --no-config-cortex
+      - --storage-directory
+      - /data/files
+    volumes:
+      - thehive-data:/data
+    expose:
+      - "9000"
+    networks:
+      - bloodhound-net
+
   neo4j:
     image: neo4j:4.4
     container_name: bloodhound-neo4j
     environment:
-      - NEO4J_AUTH=neo4j/bloodhoundcommunityedition
+      - NEO4J_AUTH=${NEO4J_AUTH:-neo4j/bloodhoundcommunityedition}
       - NEO4J_dbms_memory_heap_initial__size=1G
       - NEO4J_dbms_memory_heap_max__size=1G
     volumes:
@@ -25,9 +85,9 @@ services:
     image: postgres:14
     container_name: bloodhound-postgres
     environment:
-      - POSTGRES_USER=bloodhound
-      - POSTGRES_PASSWORD=bloodhoundcommunityedition
-      - POSTGRES_DB=bloodhound
+      - POSTGRES_USER=${BH_POSTGRES_USER:-bloodhound}
+      - POSTGRES_PASSWORD=${BH_POSTGRES_PASSWORD:-change-me}
+      - POSTGRES_DB=${BH_POSTGRES_DATABASE:-bloodhound}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
@@ -47,14 +107,14 @@ services:
       - BH_API_PORT=8008
       - BH_HOSTNAME=bloodhound.local
       - BH_ADMIN_EMAIL=admin@bloodhoundenterprise.io
-      - BH_ADMIN_PASSWORD=BloodHound
+      - BH_ADMIN_PASSWORD=${BH_ADMIN_PASSWORD:-change-me}
       - BH_NEO4J_HOSTNAME=neo4j
-      - BH_NEO4J_AUTH=neo4j/bloodhoundcommunityedition
+      - BH_NEO4J_AUTH=${NEO4J_AUTH:-neo4j/bloodhoundcommunityedition}
       - BH_NEO4J_PORT=7687
       - BH_NEO4J_WEB_PORT=7474
-      - BH_POSTGRES_USER=bloodhound
-      - BH_POSTGRES_PASSWORD=bloodhoundcommunityedition
-      - BH_POSTGRES_DATABASE=bloodhound
+      - BH_POSTGRES_USER=${BH_POSTGRES_USER:-bloodhound}
+      - BH_POSTGRES_PASSWORD=${BH_POSTGRES_PASSWORD:-change-me}
+      - BH_POSTGRES_DATABASE=${BH_POSTGRES_DATABASE:-bloodhound}
       - BH_POSTGRES_HOST=postgres
       - BH_POSTGRES_PORT=5432
     expose:
@@ -68,9 +128,77 @@ services:
     container_name: bloodhound-proxy
     depends_on:
       - bloodhound
+      - thehive
     volumes:
       - ../docker/bloodhound/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "8080:80"
     networks:
       - bloodhound-net
+
+  midpoint-postgres:
+    image: postgres:14
+    container_name: midpoint-postgres
+    environment:
+      - POSTGRES_USER=${MP_POSTGRES_USER:-midpoint}
+      - POSTGRES_PASSWORD=${MP_POSTGRES_PASSWORD:-change-me}
+      - POSTGRES_DB=${MP_POSTGRES_DB:-midpoint}
+    volumes:
+      - midpoint-postgres-data:/var/lib/postgresql/data
+    networks:
+      - midpoint-net
+
+  midpoint:
+    image: evolveum/midpoint:4.10
+    container_name: midpoint-app
+    depends_on:
+      - midpoint-postgres
+    environment:
+      - MP_DATABASE_HOST=midpoint-postgres
+      - MP_DATABASE_PORT=5432
+      - MP_DATABASE_NAME=${MP_POSTGRES_DB:-midpoint}
+      - MP_DATABASE_USER=${MP_POSTGRES_USER:-midpoint}
+      - MP_DATABASE_PASSWORD=${MP_POSTGRES_PASSWORD:-change-me}
+    expose:
+      - "8080"
+    networks:
+      - midpoint-net
+
+  identity-governance-adapter:
+    image: python:3.12-slim
+    container_name: identity-governance-adapter
+    depends_on:
+      - midpoint
+    environment:
+      - MIDPOINT_BASE_URL=http://midpoint:8080
+      - MIDPOINT_USERNAME=${MIDPOINT_USERNAME:-administrator}
+      - MIDPOINT_PASSWORD=${MIDPOINT_PASSWORD:-change-me}
+    volumes:
+      - ../../integrations/identity-governance-adapter:/app
+    working_dir: /app
+    command: ["python", "-c", "print('identity-governance-adapter container ready')"]
+    networks:
+      - midpoint-net
+
+  identity-governance-adapter-api:
+    image: python:3.12-slim
+    container_name: identity-governance-adapter-api
+    depends_on:
+      - midpoint
+    environment:
+      - MIDPOINT_BASE_URL=http://midpoint:8080
+      - MIDPOINT_USERNAME=${MIDPOINT_USERNAME:-administrator}
+      - MIDPOINT_PASSWORD=${MIDPOINT_PASSWORD:-change-me}
+      - ADAPTER_PATH=/app/client.py
+      - PORT=8090
+    volumes:
+      - ../../integrations/identity-governance-adapter:/app
+      - ../identity-governance-adapter-api:/srv:ro
+    working_dir: /srv
+    command: ["python", "server.py"]
+    expose:
+      - "8090"
+    networks:
+      - midpoint-net
+      - bloodhound-net
+

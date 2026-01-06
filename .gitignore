@@ -11,6 +11,13 @@ infra/docker/bloodhound/tmp_hash.py
 azurehound-output/
 **/azurehound-output/
 
+# Local incident runtime data (do not commit)
+control-layer/incident-coordinator/data/
+
+# Environment files
+.env
+**/.env
+
 # Node/Python caches
 node_modules/
 __pycache__/

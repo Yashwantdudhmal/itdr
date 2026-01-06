@@ -1,0 +1,3 @@
+[submodule "open-source/identity-governance/midpoint"]
+	path = open-source/identity-governance/midpoint
+	url = https://github.com/Evolveum/midpoint
