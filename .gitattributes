@@ -1,0 +1,6 @@
+# Ensure Linux container entrypoints and templates stay LF-only (CRLF can break /bin/sh in containers)
+*.sh text eol=lf
+*.template text eol=lf
+
+# Keep PowerShell scripts in Windows-friendly line endings
+*.ps1 text eol=crlf

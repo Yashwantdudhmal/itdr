@@ -12,9 +12,12 @@ Current entrypoint UX (via the nginx `proxy` service on port 8080):
 
 Local configuration:
 
-- Copy `.env.example` to `.env` at the repo root to set passwords/secrets for your environment.
-- `.env` is intentionally gitignored.
-- For the proxy token bootstrap, `BLOODHOUND_INTERNAL_LOGIN_USERNAME` should be the BloodHound principal name (typically `admin`), not the admin email.
+- Copy `.env.example` to `.env` to set passwords/secrets for your environment. `.env` is intentionally gitignored.
+- Docker Compose reads `.env` from your current working directory. Either:
+	- run from the repo root: `docker compose -f infra/compose/docker-compose.yml --env-file .env up -d`, or
+	- keep a second `.env` alongside `infra/compose/docker-compose.yml` for `cd infra/compose; docker compose up -d`.
+- BloodHound 5 may auto-generate the initial admin password on first boot and print it in `docker logs bloodhound-app`.
+- For the proxy token bootstrap, `BLOODHOUND_INTERNAL_LOGIN_USERNAME` is typically `admin`.
 
 TheHive licensing (important)
 

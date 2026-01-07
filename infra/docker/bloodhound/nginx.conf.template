@@ -4,14 +4,15 @@ server {
     resolver 127.0.0.11 ipv6=off valid=10s;
     resolver_timeout 5s;
 
-    set $thehive_upstream thehive;
-    set $bloodhound_upstream bloodhound;
+    # Use variables for proxy_pass so nginx doesn't require upstream DNS at startup.
+    set $thehive_upstream thehive:9000;
+    set $midpoint_upstream midpoint-app;
 
     # Internal auth check used to gate BloodHound embed/resources by TheHive session.
     # TheHive returns 200 only when the current request is authenticated.
     location = /__thehive_auth {
         internal;
-        proxy_pass http://$thehive_upstream:9000/api/v1/user/current;
+        proxy_pass http://$thehive_upstream/api/v1/user/current;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -61,6 +62,11 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Never expose the BloodHound login endpoint publicly.
+    location = /api/v2/login {
+        return 404;
+    }
+
     location /ws {
         auth_request /__thehive_auth;
         proxy_set_header X-Forwarded-User thehive;
@@ -73,13 +79,36 @@ server {
 
     # STEP 1: Single-frontend requirement
     # Block public access to BloodHound UI. BloodHound must only be reachable via internal routing.
+    location = /ui {
+        return 404;
+    }
+
     location ^~ /ui/ {
+        return 404;
+    }
+
+    # Block direct MidPoint access.
+    location = /midpoint {
+        return 404;
+    }
+
+    location ^~ /midpoint/ {
         return 404;
     }
 
     # Embed gateway: reachable from the browser, but only returns X-Accel-Redirect
     # (nginx performs the internal handoff to the internal BloodHound route).
     location = /embed/bloodhound {
+        auth_request /__thehive_auth;
+        proxy_pass http://bloodhound-embed-gateway:8082;
+        proxy_set_header X-Forwarded-User thehive;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ^~ /embed/midpoint {
         auth_request /__thehive_auth;
         proxy_pass http://bloodhound-embed-gateway:8082;
         proxy_set_header X-Forwarded-User thehive;
@@ -102,9 +131,52 @@ server {
         proxy_pass http://bloodhound-app:8080/ui/;
     }
 
+    # Internal-only MidPoint surface. Served only via X-Accel-Redirect.
+    # All MidPoint browser-visible paths are rewritten to /embed/midpoint/*.
+    location ^~ /_internal/midpoint/ {
+        internal;
+        auth_request /__thehive_auth;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-User thehive;
+
+        # Authenticate to MidPoint without ever exposing credentials to the browser.
+        proxy_set_header Authorization "Basic ${MIDPOINT_BASIC_AUTH}";
+
+        # Make MidPoint think it's served under /embed/midpoint.
+        proxy_set_header X-Forwarded-Prefix /embed/midpoint;
+
+        # Rewrite redirects and cookie paths from /midpoint/* to /embed/midpoint/*
+        proxy_redirect ~^(/midpoint/.*)$ /embed/midpoint$1;
+        proxy_cookie_path /midpoint/ /embed/midpoint/;
+
+        # Rewrite absolute paths in HTML/JS/CSS.
+        sub_filter_types text/html text/css application/javascript;
+        sub_filter_once off;
+        sub_filter '/midpoint/' '/embed/midpoint/';
+
+        proxy_pass http://$midpoint_upstream:8080/midpoint/;
+    }
+
+    # TheHive API base for the frontend.
+    # TheHive UI appends /v1/* itself (e.g., ${API_URL}/v1/login), so API_URL must NOT already
+    # include /v1. We avoid colliding with BloodHound's public /api/ by exposing TheHive under a
+    # dedicated prefix.
+    location ^~ /thapi/api/ {
+        rewrite ^/thapi/api/(.*)$ /api/$1 break;
+        proxy_pass http://$thehive_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # TheHive API (must stay ahead of the generic /api/ BloodHound route).
     location /api/v1/ {
-        proxy_pass http://$thehive_upstream:9000$request_uri;
+        proxy_pass http://$thehive_upstream$request_uri;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -113,11 +185,28 @@ server {
 
     # TheHive UI (primary frontend)
     location / {
-        proxy_pass http://$thehive_upstream:9000$request_uri;
+        # Allow HTML response rewriting to inject the TheHive left-panel items.
+        # Disable upstream compression for this location so sub_filter can work reliably.
+        proxy_set_header Accept-Encoding "";
+        sub_filter_types text/html;
+        sub_filter_once on;
+        # TheHive frontend expects window.API_URL="/api" by default, and then appends /v1/*.
+        # Rewrite to /thapi/api so calls become /thapi/api/v1/* (which we proxy to TheHive /api/*)
+        # without colliding with BloodHound's /api/.
+        sub_filter 'window.API_URL="/api"' 'window.API_URL="/thapi/api"';
+        sub_filter '</head>' '<script src="/_itdr/itdr-embed.js"></script></head>';
+
+        proxy_pass http://$thehive_upstream$request_uri;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Local injection script served by nginx (not from TheHive).
+    location = /_itdr/itdr-embed.js {
+        default_type application/javascript;
+        alias /etc/nginx/itdr-embed.js;
     }
 
     # IMPORTANT: Do not expose BloodHound UI under any public path.
